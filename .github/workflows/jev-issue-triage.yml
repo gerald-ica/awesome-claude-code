@@ -1,0 +1,39 @@
+# Issue triage — advisory Jev classification on new issues (fail-open, comment-only).
+name: Jev issue triage
+on:
+  issues:
+    types: [opened]
+
+permissions:
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Classify with Jev
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ISSUE: ${{ github.event.issue.number }}
+          TITLE: ${{ github.event.issue.title }}
+          BODY: ${{ github.event.issue.body }}
+        run: |
+          PAYLOAD=$(jq -n --arg t "$TITLE" --arg b "$BODY" '{
+            state: {issue_title: $t, issue_body: $b},
+            model: "jev-latest",
+            questions: {
+              kind: {type: "choice", instructions: "What kind of issue submission is this?", criteria: {
+                valid_resource: "a legitimate resource, tool, or project submission for this awesome list",
+                questions: "a genuine question about the list or contribution process",
+                duplicate: "likely already covered or previously submitted",
+                spam_or_selfpromo: "spam, low-quality self-promotion, or off-topic",
+                needs_info: "potentially valid but missing required information"}},
+              actionability: {type: "noul", instructions: "Can a maintainer act on this immediately without follow-up questions?"}
+            }}')
+          RESP=$(curl -sf --max-time 45 https://api.typesafe.ai/v1/systemone \
+            -H "Authorization: Bearer ${{ secrets.TYPESAFE_API_KEY }}" \
+            -H "Content-Type: application/json" -d "$PAYLOAD") || { echo "Jev unavailable; skip (fail-open)"; exit 0; }
+          KIND=$(echo "$RESP" | jq -r '.answers.kind.choice')
+          ACT=$(echo "$RESP" | jq -r '.answers.actionability.noul')
+          gh issue comment "$ISSUE" --body "🤖 **Jev triage**: \`$KIND\` · actionable now: $ACT (advisory only — maintainers decide)."
